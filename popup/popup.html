@@ -8,53 +8,63 @@
 </head>
 <body>
   <div class="container">
-    <h1>Shorts Auto Scroller</h1>
+    <h1>Shorts Controller</h1>
 
-    <div class="status-section">
-      <div class="status-indicator" id="statusIndicator">
-        <span class="status-dot"></span>
-        <span class="status-text" id="statusText">Inactive</span>
+    <!-- Voice Control Section -->
+    <div class="section">
+      <div class="section-header">Voice Control</div>
+      <div class="control-group">
+        <label class="toggle-label">
+          <input type="checkbox" id="voiceEnabled">
+          <span>Enable Voice</span>
+          <span class="voice-status" id="voiceStatus"></span>
+        </label>
+        <p class="voice-hint">Clap or snap to skip to next Short</p>
+        <p class="voice-hint">Instant detection - works while gaming</p>
       </div>
-    </div>
-
-    <div class="control-group">
-      <label for="interval">Scroll Interval (seconds)</label>
-      <div class="slider-row">
-        <input type="range" id="interval" min="3" max="60" value="10" step="1">
-        <span class="slider-value" id="intervalValue">10s</span>
-      </div>
-    </div>
-
-    <div class="control-group">
-      <label>
-        <input type="checkbox" id="watchFull" checked>
-        Wait for video to finish before scrolling
-      </label>
-    </div>
-
-    <div class="control-group">
-      <label>
-        <input type="checkbox" id="randomize">
-        Randomize interval (±30%)
-      </label>
     </div>
 
     <div class="divider"></div>
 
-    <div class="control-group voice-section">
-      <label>
-        <input type="checkbox" id="voiceEnabled">
-        Voice Control
-      </label>
-      <p class="voice-hint">Say: <strong>"next"</strong>, <strong>"skip"</strong>, <strong>"start"</strong>, or <strong>"stop"</strong></p>
+    <!-- Auto Scroll Section -->
+    <div class="section">
+      <div class="section-header">Auto Scroll</div>
+      <div class="status-section">
+        <div class="status-indicator" id="statusIndicator">
+          <span class="status-dot"></span>
+          <span class="status-text" id="statusText">Off</span>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <label for="interval">Interval (seconds)</label>
+        <div class="slider-row">
+          <input type="range" id="interval" min="3" max="60" value="10" step="1">
+          <span class="slider-value" id="intervalValue">10s</span>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <label>
+          <input type="checkbox" id="watchFull" checked>
+          Wait for video to finish
+        </label>
+      </div>
+
+      <div class="control-group">
+        <label>
+          <input type="checkbox" id="randomize">
+          Randomize interval (±30%)
+        </label>
+      </div>
+
+      <div class="button-row">
+        <button id="toggleBtn" class="btn btn-primary">Start Auto</button>
+        <button id="skipBtn" class="btn btn-secondary">Skip</button>
+      </div>
     </div>
 
-    <div class="button-row">
-      <button id="toggleBtn" class="btn btn-primary">Start</button>
-      <button id="skipBtn" class="btn btn-secondary">Skip</button>
-    </div>
-
-    <p class="hint">Navigate to <strong>youtube.com/shorts</strong> to use this extension.</p>
+    <p class="hint">Navigate to <strong>youtube.com/shorts</strong> to use.</p>
   </div>
   <script src="popup.js"></script>
 </body>

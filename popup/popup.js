@@ -16,7 +16,10 @@ chrome.storage.local.get(['interval', 'watchFull', 'randomize', 'running', 'voic
   }
   if (data.watchFull != null) watchFullCheckbox.checked = data.watchFull;
   if (data.randomize != null) randomizeCheckbox.checked = data.randomize;
-  if (data.voiceEnabled != null) voiceCheckbox.checked = data.voiceEnabled;
+  if (data.voiceEnabled != null) {
+    voiceCheckbox.checked = data.voiceEnabled;
+    document.getElementById('voiceStatus').textContent = data.voiceEnabled ? 'Listening' : '';
+  }
   updateUI(data.running || false);
 });
 
@@ -66,17 +69,24 @@ skipBtn.addEventListener('click', () => {
   sendToContent({ type: 'SKIP' });
 });
 
+const voiceStatus = document.getElementById('voiceStatus');
+
+// Update voice status display
+voiceCheckbox.addEventListener('change', () => {
+  voiceStatus.textContent = voiceCheckbox.checked ? 'Listening' : '';
+});
+
 function updateUI(running) {
   if (running) {
-    toggleBtn.textContent = 'Stop';
+    toggleBtn.textContent = 'Stop Auto';
     toggleBtn.classList.add('running');
     statusIndicator.classList.add('active');
     statusText.textContent = 'Running';
   } else {
-    toggleBtn.textContent = 'Start';
+    toggleBtn.textContent = 'Start Auto';
     toggleBtn.classList.remove('running');
     statusIndicator.classList.remove('active');
-    statusText.textContent = 'Inactive';
+    statusText.textContent = 'Off';
   }
 }
 

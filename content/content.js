@@ -9,16 +9,15 @@
   let overlay = null;
   let countdownInterval = null;
   let countdownSeconds = 0;
-  let recognition = null;
-  let voiceActive = false;
-  let lastVoiceCommandTime = 0;
 
-  // Voice commands mapped to actions
-  const VOICE_COMMANDS = {
-    skip: ['next', 'skip', 'scroll', 'swipe'],
-    start: ['start', 'play', 'go', 'begin'],
-    stop: ['stop', 'pause', 'end', 'halt'],
-  };
+  // Sound detection state
+  let audioContext = null;
+  let micStream = null;
+  let analyser = null;
+  let soundDetectorRunning = false;
+  let lastTriggerTime = 0;
+  const TRIGGER_COOLDOWN = 1500; // ms between triggers
+  const VOLUME_THRESHOLD = 0.4; // 0-1, how loud the snap/clap needs to be
 
   // Load saved state on injection
   chrome.storage.local.get(['running', 'interval', 'watchFull', 'randomize', 'voiceEnabled'], (data) => {
@@ -27,7 +26,7 @@
     if (data.randomize != null) settings.randomize = data.randomize;
     if (data.voiceEnabled != null) settings.voiceEnabled = data.voiceEnabled;
     if (data.running) start();
-    if (settings.voiceEnabled) startVoice();
+    if (settings.voiceEnabled) startSoundDetector();
   });
 
   // Listen for messages from popup
@@ -49,8 +48,8 @@
         clearScheduledScroll();
         scheduleNextScroll();
       }
-      if (settings.voiceEnabled && !voiceWasEnabled) startVoice();
-      else if (!settings.voiceEnabled && voiceWasEnabled) stopVoice();
+      if (settings.voiceEnabled && !voiceWasEnabled) startSoundDetector();
+      else if (!settings.voiceEnabled && voiceWasEnabled) stopSoundDetector();
     }
   });
 
@@ -72,12 +71,10 @@
   });
   urlObserver.observe(document.body, { childList: true, subtree: true });
 
-  // Attach seek/pause/play listeners to the current video
   function watchCurrentVideo() {
     const video = getCurrentVideo();
     if (video === watchedVideo) return;
 
-    // Clean up old listeners
     if (watchedVideo) {
       watchedVideo.removeEventListener('seeked', onVideoSeeked);
       watchedVideo.removeEventListener('pause', onVideoPaused);
@@ -111,7 +108,6 @@
     }
   }
 
-  // Periodically check if the video element changed (YT recycles them)
   setInterval(() => {
     if (running) watchCurrentVideo();
   }, 2000);
@@ -158,7 +154,6 @@
 
     const video = getCurrentVideo();
 
-    // If the video is paused, wait for it to resume before scheduling
     if (video && video.paused) {
       const onPlay = () => {
         video.removeEventListener('play', onPlay);
@@ -284,166 +279,86 @@
     if (el) el.textContent = countdownSeconds + 's';
   }
 
-  // -- Voice Control --
+  // -- Sound Detector (Clap/Snap) --
 
-  function startVoice() {
-    if (voiceActive) return;
+  async function startSoundDetector() {
+    if (soundDetectorRunning) return;
 
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      console.warn('[AutoScroller] SpeechRecognition API not available');
-      showVoiceStatus('Not supported');
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      console.warn('[AutoScroller] Mic permission denied:', err);
+      showSoundBadge('Mic denied', true);
       return;
     }
 
-    // Request mic permission explicitly first
-    navigator.mediaDevices.getUserMedia({ audio: true })
-      .then((stream) => {
-        // Got permission - stop the stream (SpeechRecognition manages its own)
-        stream.getTracks().forEach((t) => t.stop());
-        initRecognition(SpeechRecognition);
-      })
-      .catch((err) => {
-        console.warn('[AutoScroller] Mic permission denied:', err);
-        showVoiceStatus('Mic denied');
-      });
+    audioContext = new AudioContext();
+    const source = audioContext.createMediaStreamSource(micStream);
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.3;
+    source.connect(analyser);
+
+    soundDetectorRunning = true;
+    showSoundBadge('Listening', false);
+
+    startDetectLoop();
   }
 
-  function initRecognition(SpeechRecognition) {
-    recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
-    recognition.maxAlternatives = 3;
+  function stopSoundDetector() {
+    soundDetectorRunning = false;
 
-    recognition.onstart = () => {
-      console.log('[AutoScroller] Voice listening...');
-      showVoiceBadge(true);
-    };
-
-    recognition.onresult = (event) => {
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
-        for (let alt = 0; alt < result.length; alt++) {
-          const transcript = result[alt].transcript.trim().toLowerCase();
-          console.log('[AutoScroller] Heard:', JSON.stringify(transcript), 'confidence:', result[alt].confidence.toFixed(2), result.isFinal ? '(final)' : '(interim)');
-          // Show what was heard on the badge
-          updateVoiceBadgeText(transcript);
-          if (handleVoiceCommand(transcript)) return;
-        }
-      }
-    };
-
-    recognition.onaudiostart = () => {
-      console.log('[AutoScroller] Audio capture started');
-    };
-
-    recognition.onspeechstart = () => {
-      console.log('[AutoScroller] Speech detected');
-    };
-
-    recognition.onsoundstart = () => {
-      console.log('[AutoScroller] Sound detected');
-    };
-
-    // Auto-restart on end (browser kills continuous after ~60s of silence)
-    recognition.onend = () => {
-      console.log('[AutoScroller] Recognition ended, restarting...');
-      if (voiceActive) {
-        setTimeout(() => {
-          if (voiceActive && recognition) {
-            try { recognition.start(); } catch {}
-          }
-        }, 500);
-      }
-    };
-
-    recognition.onerror = (e) => {
-      console.warn('[AutoScroller] Voice error:', e.error);
-      if (e.error === 'not-allowed') {
-        showVoiceStatus('Mic blocked');
-        stopVoice();
-      }
-      // 'no-speech' and 'aborted' are normal - onend will restart
-    };
-
-    try {
-      recognition.start();
-      voiceActive = true;
-    } catch (err) {
-      console.warn('[AutoScroller] Could not start recognition:', err);
-      showVoiceStatus('Error');
+    if (detectInterval) {
+      clearInterval(detectInterval);
+      detectInterval = null;
     }
-  }
-
-  function stopVoice() {
-    voiceActive = false;
-    if (recognition) {
-      try { recognition.abort(); } catch {}
-      recognition = null;
+    if (micStream) {
+      micStream.getTracks().forEach((t) => t.stop());
+      micStream = null;
     }
-    showVoiceBadge(false);
-  }
-
-  function handleVoiceCommand(transcript) {
-    // Debounce - ignore commands within 1.5s of the last one
-    const now = Date.now();
-    if (now - lastVoiceCommandTime < 1500) return false;
-
-    const words = transcript.split(/\s+/);
-
-    for (const word of words) {
-      if (VOICE_COMMANDS.skip.includes(word)) {
-        lastVoiceCommandTime = now;
-        flashVoiceFeedback('Skip!');
-        scrollToNext();
-        return true;
-      }
-      if (VOICE_COMMANDS.start.includes(word)) {
-        lastVoiceCommandTime = now;
-        flashVoiceFeedback('Starting');
-        if (!running) {
-          start();
-          chrome.storage.local.set({ running: true });
-        }
-        return true;
-      }
-      if (VOICE_COMMANDS.stop.includes(word)) {
-        lastVoiceCommandTime = now;
-        flashVoiceFeedback('Stopping');
-        if (running) {
-          stop();
-          chrome.storage.local.set({ running: false });
-        }
-        return true;
-      }
+    if (audioContext) {
+      audioContext.close();
+      audioContext = null;
     }
-    return false;
-  }
+    analyser = null;
 
-  function showVoiceBadge(active) {
-    let badge = document.getElementById('yt-as-voice-badge');
-    if (active) {
-      if (!badge) {
-        badge = document.createElement('div');
-        badge.id = 'yt-as-voice-badge';
-        document.body.appendChild(badge);
-      }
-      badge.innerHTML = '<span class="yt-as-mic-icon">&#127908;</span> Listening';
-      badge.className = 'yt-as-voice-active';
-    } else if (badge) {
-      badge.remove();
-    }
-  }
-
-  function updateVoiceBadgeText(text) {
     const badge = document.getElementById('yt-as-voice-badge');
-    if (badge) {
-      badge.innerHTML = '<span class="yt-as-mic-icon">&#127908;</span> "' + text + '"';
-    }
+    if (badge) badge.remove();
   }
 
-  function showVoiceStatus(text) {
+  let detectInterval = null;
+
+  function startDetectLoop() {
+    if (detectInterval) return;
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+    // Poll at ~10 times per second - plenty fast for claps, minimal CPU
+    detectInterval = setInterval(() => {
+      if (!soundDetectorRunning || !analyser) {
+        clearInterval(detectInterval);
+        detectInterval = null;
+        return;
+      }
+
+      analyser.getByteFrequencyData(dataArray);
+
+      let sum = 0;
+      for (let i = 0; i < dataArray.length; i++) {
+        const v = dataArray[i] / 255;
+        sum += v * v;
+      }
+      const rms = Math.sqrt(sum / dataArray.length);
+
+      const now = Date.now();
+      if (rms > VOLUME_THRESHOLD && (now - lastTriggerTime > TRIGGER_COOLDOWN)) {
+        lastTriggerTime = now;
+        flashFeedback('Skip!');
+        scrollToNext();
+      }
+    }, 100);
+  }
+
+  function showSoundBadge(text, isError) {
     let badge = document.getElementById('yt-as-voice-badge');
     if (!badge) {
       badge = document.createElement('div');
@@ -451,11 +366,10 @@
       document.body.appendChild(badge);
     }
     badge.innerHTML = '<span class="yt-as-mic-icon">&#127908;</span> ' + text;
-    badge.className = 'yt-as-voice-error';
-    setTimeout(() => { if (badge) badge.remove(); }, 4000);
+    badge.className = isError ? 'yt-as-voice-error' : 'yt-as-voice-active';
   }
 
-  function flashVoiceFeedback(text) {
+  function flashFeedback(text) {
     let fb = document.getElementById('yt-as-voice-feedback');
     if (!fb) {
       fb = document.createElement('div');

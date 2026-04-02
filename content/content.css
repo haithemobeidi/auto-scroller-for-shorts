@@ -1,0 +1,100 @@
+#yt-autoscroll-overlay {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 999999;
+  cursor: pointer;
+  transition: opacity 0.3s;
+}
+
+#yt-autoscroll-overlay:hover {
+  opacity: 0.7;
+}
+
+.yt-as-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 68, 68, 0.9);
+  color: white;
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  user-select: none;
+}
+
+.yt-as-icon {
+  font-size: 10px;
+}
+
+.yt-as-countdown {
+  min-width: 20px;
+  text-align: center;
+}
+
+/* Voice control badge */
+#yt-as-voice-badge {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  z-index: 999999;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(76, 175, 80, 0.9);
+  color: white;
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  user-select: none;
+  animation: yt-as-pulse 2s infinite;
+}
+
+#yt-as-voice-badge.yt-as-voice-error {
+  background: rgba(255, 68, 68, 0.9);
+  animation: none;
+}
+
+.yt-as-mic-icon {
+  font-size: 14px;
+}
+
+@keyframes yt-as-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* Voice feedback flash */
+#yt-as-voice-feedback {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 9999999;
+  background: rgba(0, 0, 0, 0.8);
+  color: white;
+  padding: 16px 32px;
+  border-radius: 12px;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  font-size: 24px;
+  font-weight: 700;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+#yt-as-voice-feedback.yt-as-flash {
+  animation: yt-as-feedback-flash 1s ease-out forwards;
+}
+
+@keyframes yt-as-feedback-flash {
+  0% { opacity: 1; transform: translate(-50%, -50%) scale(1.1); }
+  70% { opacity: 1; }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(1); }
+}

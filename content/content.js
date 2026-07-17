@@ -37,6 +37,12 @@
     try { chrome.storage.local.set(obj); } catch (_) { /* orphaned script after reload */ }
   }
 
+  // False once this content script is orphaned (extension reloaded/updated while
+  // the tab stayed open): chrome.runtime.id goes away and every chrome API throws.
+  function contextAlive() {
+    try { return !!(chrome.runtime && chrome.runtime.id); } catch (_) { return false; }
+  }
+
   // ---------- state / settings sync ----------
 
   chrome.storage.local.get([...Object.keys(DEFAULTS), 'running'], (data) => {
@@ -171,6 +177,9 @@
 
   function tick() {
     if (!engaged) return;
+    // Orphaned after an extension reload/update: our storage listener is dead, so
+    // tear down rather than leave a stuck overlay (and a live mic) on the page.
+    if (!contextAlive()) { disengage(); stopVoice(); return; }
     if (!isShortsPage()) { disengage(); return; }
 
     // Fallback SPA-navigation detection in case yt-navigate-finish is missed
@@ -406,6 +415,8 @@
 
     recognition.onend = () => {
       if (!voiceActive) return;
+      // Stop restarting (releasing the mic) if this script has been orphaned.
+      if (!contextAlive()) { stopVoice(); return; }
       // Chrome stops continuous recognition periodically; restart with backoff.
       voiceRestartDelay = Math.min(voiceRestartDelay * 2, 5000);
       setTimeout(() => {

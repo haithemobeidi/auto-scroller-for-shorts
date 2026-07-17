@@ -59,9 +59,20 @@ this can't be eliminated — the fix makes the *matcher* stricter instead:
 
 Verified with a logic test (scratchpad `match_test.js`): 8/8 sample dialogue lines
 that used to false-fire now don't, 4/4 real commands still work. **Not yet tested
-live with a real mic + speaker.** This is queued for the next store version — bump
-`manifest.json` to **2.0.1**, rebuild the ZIP, and upload once the v2.0.0 review
-resolves (don't upload over an in-review item).
+live with a real mic + speaker.**
+
+Also fixed: **orphaned content script left a stuck overlay/mic on the page**
+(`content/content.js`). When the extension is reloaded or auto-updated while a
+YouTube tab stays open, the old content script keeps running but its storage
+listener is dead — so the countdown badge stayed on screen (and voice kept the mic
+hot) even though the popup correctly showed "Off". Added a `contextAlive()` check
+(`chrome.runtime.id` disappears when orphaned) that tears the script down from
+`tick()` and stops the voice `onend` restart loop. Symptom that surfaced it: badge
+showing with Auto Scroll = Off; immediate user workaround is refreshing the tab.
+
+Both fixes are queued for the next store version — bump `manifest.json` to **2.0.1**,
+rebuild the ZIP, and upload once the v2.0.0 review resolves (don't upload over an
+in-review item).
 
 ## If you need to update the extension later
 

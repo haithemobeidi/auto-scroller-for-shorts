@@ -3,369 +3,434 @@
   if (window.__ytAutoScrollerLoaded) return;
   window.__ytAutoScrollerLoaded = true;
 
-  let scrollTimer = null;
-  let running = false;
-  let settings = { interval: 10, watchFull: true, randomize: false, voiceEnabled: false };
+  const LOG = '[AutoScroller]';
+  const DEBUG = false;
+  const DEFAULTS = { interval: 10, watchFull: true, randomize: false, voiceEnabled: false };
+
+  let settings = { ...DEFAULTS };
+  let running = false;   // user intent, persisted in storage
+  let engaged = false;   // actively auto-scrolling on a Shorts page
+
+  // Per-video scheduling state
+  let ticker = null;
+  let deadline = null;       // ms timestamp (interval mode)
+  let pausedAt = null;       // ms timestamp when the video was paused/hidden
+  let lastTime = null;       // last observed currentTime, for loop detection
+  let advancing = false;
+  let currentUrl = location.href;
+  let watchedVideo = null;
+  let preferredStrategy = 0; // index of the last strategy that worked
+
+  // Voice state
+  let recognition = null;
+  let voiceActive = false;
+  let voiceRestartDelay = 300;
+  let lastCommandTime = 0;
+  const COMMAND_COOLDOWN = 2000;
+  const SKIP_WORDS = ['next', 'skip', 'scroll', 'swipe', 'nex', 'neck', 'text', 'mix'];
+
   let overlay = null;
-  let countdownInterval = null;
-  let countdownSeconds = 0;
 
-  // Sound detection state
-  let audioContext = null;
-  let micStream = null;
-  let analyser = null;
-  let soundDetectorRunning = false;
-  let lastTriggerTime = 0;
-  const TRIGGER_COOLDOWN = 1500; // ms between triggers
-  const VOLUME_THRESHOLD = 0.4; // 0-1, how loud the snap/clap needs to be
+  const isShortsPage = () => location.pathname.startsWith('/shorts');
 
-  // Load saved state on injection
-  chrome.storage.local.get(['running', 'interval', 'watchFull', 'randomize', 'voiceEnabled'], (data) => {
-    if (data.interval != null) settings.interval = data.interval;
-    if (data.watchFull != null) settings.watchFull = data.watchFull;
-    if (data.randomize != null) settings.randomize = data.randomize;
-    if (data.voiceEnabled != null) settings.voiceEnabled = data.voiceEnabled;
-    if (data.running) start();
-    if (settings.voiceEnabled) startSoundDetector();
+  function safeStorageSet(obj) {
+    try { chrome.storage.local.set(obj); } catch (_) { /* orphaned script after reload */ }
+  }
+
+  // ---------- state / settings sync ----------
+
+  chrome.storage.local.get([...Object.keys(DEFAULTS), 'running'], (data) => {
+    for (const key of Object.keys(DEFAULTS)) {
+      if (data[key] != null) settings[key] = data[key];
+    }
+    if (data.running) setRunning(true, false);
+    syncVoice();
   });
 
-  // Listen for messages from popup
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    let settingsChanged = false;
+    for (const key of Object.keys(DEFAULTS)) {
+      if (changes[key]) { settings[key] = changes[key].newValue; settingsChanged = true; }
+    }
+    if (changes.running && changes.running.newValue !== running) {
+      setRunning(changes.running.newValue, false);
+    }
+    if (settingsChanged && engaged && !settings.watchFull) {
+      deadline = Date.now() + getIntervalMs();
+    }
+    syncVoice();
+  });
+
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (_sender.id !== chrome.runtime.id) return;
     if (msg.type === 'PING') {
       sendResponse({ ok: true });
-      return;
-    } else if (msg.type === 'START') {
-      settings = { ...settings, ...msg.settings };
-      start();
-    } else if (msg.type === 'STOP') {
-      stop();
     } else if (msg.type === 'SKIP') {
-      scrollToNext();
-    } else if (msg.type === 'SETTINGS_UPDATE') {
-      const voiceWasEnabled = settings.voiceEnabled;
-      settings = { ...settings, ...msg.settings };
-      if (running) {
-        clearScheduledScroll();
-        scheduleNextScroll();
-      }
-      if (settings.voiceEnabled && !voiceWasEnabled) startSoundDetector();
-      else if (!settings.voiceEnabled && voiceWasEnabled) stopSoundDetector();
+      advance('popup-skip');
+    } else if (msg.type === 'GET_STATE') {
+      sendResponse({ running, engaged, onShorts: isShortsPage() });
     }
   });
 
-  // Watch for manual navigation and video seek
-  let lastUrl = location.href;
-  let watchedVideo = null;
-
-  const urlObserver = new MutationObserver(() => {
-    if (location.href !== lastUrl) {
-      lastUrl = location.href;
-      if (running) {
-        clearScheduledScroll();
-        setTimeout(() => {
-          watchCurrentVideo();
-          scheduleNextScroll();
-        }, 500);
-      }
-    }
-  });
-  urlObserver.observe(document.body, { childList: true, subtree: true });
-
-  function watchCurrentVideo() {
-    const video = getCurrentVideo();
-    if (video === watchedVideo) return;
-
-    if (watchedVideo) {
-      watchedVideo.removeEventListener('seeked', onVideoSeeked);
-      watchedVideo.removeEventListener('pause', onVideoPaused);
-      watchedVideo.removeEventListener('play', onVideoResumed);
-    }
-
-    watchedVideo = video;
-    if (!video) return;
-
-    video.addEventListener('seeked', onVideoSeeked);
-    video.addEventListener('pause', onVideoPaused);
-    video.addEventListener('play', onVideoResumed);
+  function setRunning(next, persist = true) {
+    running = next;
+    if (persist) safeStorageSet({ running: next });
+    if (running && isShortsPage()) engage();
+    else disengage();
   }
 
-  function onVideoSeeked() {
-    if (running) {
-      clearScheduledScroll();
-      scheduleNextScroll();
-    }
-  }
+  // ---------- engage / disengage ----------
 
-  function onVideoPaused() {
-    if (running) {
-      clearScheduledScroll();
-    }
-  }
-
-  function onVideoResumed() {
-    if (running) {
-      scheduleNextScroll();
-    }
-  }
-
-  setInterval(() => {
-    if (running) watchCurrentVideo();
-  }, 2000);
-
-  // Keyboard shortcuts: Q to toggle auto-scroll, W to skip
-  document.addEventListener('keydown', (e) => {
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
-
-    if (e.key === 'q' || e.key === 'Q') {
-      e.preventDefault();
-      if (running) stop(); else start();
-      chrome.storage.local.set({ running });
-    } else if (e.key === 'w' || e.key === 'W') {
-      if (running) {
-        e.preventDefault();
-        scrollToNext();
-      }
-    }
-  });
-
-  function start() {
-    running = true;
+  function engage() {
+    if (engaged) return;
+    engaged = true;
     createOverlay();
-    scheduleNextScroll();
+    resetForNewVideo();
+    ticker = setInterval(tick, 500);
   }
 
-  function stop() {
-    running = false;
-    clearScheduledScroll();
+  function disengage() {
+    if (!engaged) return;
+    engaged = false;
+    clearInterval(ticker);
+    ticker = null;
+    unhookVideo();
     removeOverlay();
   }
 
-  function getInterval() {
-    let interval = settings.interval;
-    if (settings.randomize) {
-      const variance = interval * 0.3;
-      interval = interval - variance + Math.random() * variance * 2;
+  // ---------- SPA navigation ----------
+
+  // YouTube fires this on every internal navigation (home -> shorts, shorts -> shorts, ...)
+  document.addEventListener('yt-navigate-finish', onNavigate);
+
+  function onNavigate() {
+    currentUrl = location.href;
+    if (running && isShortsPage()) {
+      if (engaged) resetForNewVideo();
+      else engage();
+    } else {
+      disengage(); // keep `running` so we re-engage when back on Shorts
     }
-    return Math.max(3, Math.round(interval));
+    syncVoice();
   }
 
-  function scheduleNextScroll() {
-    clearScheduledScroll();
+  // ---------- video tracking ----------
 
+  function getCurrentVideo() {
+    // The active Short's <video> lives inside the single reel renderer
+    // YouTube now keeps in the DOM (verified July 2026).
+    const reelVideo = document.querySelector('ytd-reel-video-renderer video[src]');
+    if (reelVideo) return reelVideo;
+    const videos = [...document.querySelectorAll('video')];
+    return (
+      videos.find((v) => !v.paused && v.readyState >= 2) ||
+      videos.find((v) => v.src) ||
+      null
+    );
+  }
+
+  function hookVideo() {
     const video = getCurrentVideo();
+    if (video === watchedVideo) return;
+    unhookVideo();
+    watchedVideo = video;
+    lastTime = null;
+    if (video) video.addEventListener('ended', onVideoEnded);
+  }
 
-    if (video && video.paused) {
-      const onPlay = () => {
-        video.removeEventListener('play', onPlay);
-        if (running) scheduleNextScroll();
-      };
-      video.addEventListener('play', onPlay);
-      stopCountdown();
+  function unhookVideo() {
+    if (!watchedVideo) return;
+    watchedVideo.removeEventListener('ended', onVideoEnded);
+    watchedVideo.loop = true; // restore YouTube's default looping
+    watchedVideo = null;
+  }
+
+  function onVideoEnded() {
+    if (engaged && settings.watchFull) advance('video-ended');
+  }
+
+  function resetForNewVideo() {
+    advancing = false;
+    pausedAt = null;
+    lastTime = null;
+    deadline = Date.now() + getIntervalMs();
+    hookVideo();
+  }
+
+  function getIntervalMs() {
+    let seconds = settings.interval;
+    if (settings.randomize) {
+      const variance = seconds * 0.3;
+      seconds = seconds - variance + Math.random() * variance * 2;
+    }
+    return Math.max(3, seconds) * 1000;
+  }
+
+  // ---------- main loop ----------
+
+  function tick() {
+    if (!engaged) return;
+    if (!isShortsPage()) { disengage(); return; }
+
+    // Fallback SPA-navigation detection in case yt-navigate-finish is missed
+    if (location.href !== currentUrl) {
+      currentUrl = location.href;
+      resetForNewVideo();
       return;
     }
 
+    hookVideo(); // re-hook if YouTube swapped the element
+    const video = watchedVideo;
+
     if (settings.watchFull) {
-      if (video && video.duration && isFinite(video.duration)) {
-        const remaining = video.duration - video.currentTime;
-        if (remaining > 0.5) {
-          const waitTime = (remaining + 0.5) * 1000;
-          startCountdown(Math.ceil(remaining));
-          scrollTimer = setTimeout(() => scrollToNext(), waitTime);
-          return;
-        }
+      if (!video) { updateCountdown(null); return; }
+      // YouTube re-asserts loop=true; keep it off so 'ended' fires.
+      if (video.loop) video.loop = false;
+      // Belt and braces: if the video looped anyway (jumped from near the
+      // end back to the start), treat that as "ended".
+      if (
+        lastTime != null && video.duration && isFinite(video.duration) &&
+        lastTime > video.duration - 1.5 && video.currentTime < 0.75
+      ) {
+        advance('loop-detected');
+        return;
       }
-    }
-
-    const interval = getInterval();
-    startCountdown(interval);
-    scrollTimer = setTimeout(() => scrollToNext(), interval * 1000);
-  }
-
-  function clearScheduledScroll() {
-    if (scrollTimer) {
-      clearTimeout(scrollTimer);
-      scrollTimer = null;
-    }
-    stopCountdown();
-  }
-
-  function scrollToNext() {
-    const nextButton = document.querySelector(
-      '#navigation-button-down button, ' +
-      'button[aria-label="Next video"], ' +
-      '[id="navigation-button-down"] button'
-    );
-
-    if (nextButton) {
-      nextButton.click();
-    } else {
-      const shortsContainer = document.querySelector(
-        'ytd-shorts, #shorts-container, ytd-reel-video-renderer'
+      lastTime = video.currentTime;
+      updateCountdown(
+        video.duration && isFinite(video.duration)
+          ? Math.max(0, video.duration - video.currentTime)
+          : null
       );
-      if (shortsContainer) {
-        shortsContainer.scrollBy({ top: window.innerHeight, behavior: 'smooth' });
-      } else {
-        document.dispatchEvent(new KeyboardEvent('keydown', {
-          key: 'ArrowDown',
-          code: 'ArrowDown',
-          keyCode: 40,
-          bubbles: true,
-        }));
+    } else {
+      const paused = (video && video.paused) || document.hidden;
+      if (paused && !advancing) {
+        if (pausedAt == null) pausedAt = Date.now();
+        updateCountdown(Math.max(0, deadline - pausedAt) / 1000);
+        return;
       }
-    }
-
-    if (running) {
-      setTimeout(() => scheduleNextScroll(), 500);
+      if (pausedAt != null) {
+        deadline += Date.now() - pausedAt; // freeze the countdown while paused
+        pausedAt = null;
+      }
+      const left = deadline - Date.now();
+      updateCountdown(Math.max(0, left) / 1000);
+      if (left <= 0) advance('interval');
     }
   }
 
-  function getCurrentVideo() {
-    const videos = document.querySelectorAll('video');
-    for (const video of videos) {
-      if (!video.paused && video.readyState >= 2) return video;
-    }
-    return videos[0] || null;
+  // ---------- advancing (multi-strategy, self-verifying) ----------
+
+  const STRATEGIES = [
+    ['next-button', () => {
+      const btn = document.querySelector(
+        '#navigation-button-down button, button[aria-label="Next video"]'
+      );
+      if (!btn) return false;
+      btn.click();
+      return true;
+    }],
+    ['player-api', () => {
+      // Handled by content/bridge.js in the MAIN world -> player.nextVideo()
+      document.dispatchEvent(new CustomEvent('ytas:next'));
+      return true;
+    }],
+    ['arrow-key', () => {
+      const target = document.querySelector('ytd-shorts') || document.body;
+      target.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, which: 40,
+        bubbles: true, cancelable: true,
+      }));
+      return true;
+    }],
+    ['scroll-container', () => {
+      const container = document.querySelector('#shorts-container');
+      if (!container) return false;
+      container.scrollBy({ top: container.clientHeight, behavior: 'smooth' });
+      return true;
+    }],
+  ];
+
+  function advance(reason) {
+    if (advancing) return;
+    advancing = true;
+
+    const startUrl = location.href;
+    const startVideo = getCurrentVideo();
+    const startSrc = startVideo ? startVideo.src : null;
+
+    // Try the strategy that worked last time first.
+    const order = STRATEGIES.map((_, i) => (preferredStrategy + i) % STRATEGIES.length);
+
+    const verified = () => {
+      if (location.href !== startUrl) return true;
+      const v = getCurrentVideo();
+      return !!(v && startSrc && v.src !== startSrc);
+    };
+
+    const tryAt = (k) => {
+      if (k >= order.length) {
+        console.warn(LOG, `could not advance (${reason}); retrying in 3s`);
+        advancing = false;
+        setTimeout(() => { if (engaged && !advancing) advance('retry'); }, 3000);
+        return;
+      }
+      const [name, fire] = STRATEGIES[order[k]];
+      let fired = false;
+      try { fired = fire(); } catch (_) { fired = false; }
+      if (!fired) { tryAt(k + 1); return; }
+
+      setTimeout(() => {
+        if (verified()) {
+          preferredStrategy = order[k];
+          if (DEBUG) console.log(LOG, `advanced via "${name}" (${reason})`);
+          advancing = false;
+          if (engaged && location.href !== currentUrl) {
+            currentUrl = location.href;
+            resetForNewVideo();
+          }
+        } else {
+          tryAt(k + 1);
+        }
+      }, 800);
+    };
+
+    tryAt(0);
   }
 
-  // -- Overlay UI --
+  // ---------- keyboard shortcuts: Q toggle, W skip ----------
+
+  document.addEventListener('keydown', (e) => {
+    if (!isShortsPage() || e.repeat || e.ctrlKey || e.altKey || e.metaKey) return;
+    const t = e.target;
+    if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) return;
+    if (e.key === 'q' || e.key === 'Q') {
+      e.preventDefault();
+      setRunning(!running);
+    } else if ((e.key === 'w' || e.key === 'W') && engaged) {
+      e.preventDefault();
+      advance('hotkey');
+    }
+  });
+
+  // ---------- overlay UI ----------
 
   function createOverlay() {
     if (overlay) return;
     overlay = document.createElement('div');
     overlay.id = 'yt-autoscroll-overlay';
-    overlay.innerHTML = `
-      <div class="yt-as-badge">
-        <span class="yt-as-icon">&#9654;</span>
-        <span class="yt-as-countdown" id="yt-as-countdown"></span>
-      </div>
-    `;
+
+    const badge = document.createElement('div');
+    badge.className = 'yt-as-badge';
+
+    const icon = document.createElement('span');
+    icon.className = 'yt-as-icon';
+    icon.textContent = '▶';
+
+    const countdown = document.createElement('span');
+    countdown.className = 'yt-as-countdown';
+    countdown.id = 'yt-as-countdown';
+
+    badge.append(icon, countdown);
+    overlay.appendChild(badge);
+    overlay.title = 'Auto-scroll is on - click to stop (Q)';
+    overlay.addEventListener('click', () => setRunning(false));
     document.body.appendChild(overlay);
-    overlay.addEventListener('click', () => {
-      stop();
-      chrome.storage.local.set({ running: false });
-    });
   }
 
   function removeOverlay() {
-    if (overlay) {
-      overlay.remove();
-      overlay = null;
-    }
+    if (overlay) { overlay.remove(); overlay = null; }
   }
 
-  function startCountdown(seconds) {
-    stopCountdown();
-    countdownSeconds = seconds;
-    updateCountdownDisplay();
-    countdownInterval = setInterval(() => {
-      countdownSeconds--;
-      if (countdownSeconds <= 0) {
-        stopCountdown();
-      } else {
-        updateCountdownDisplay();
-      }
-    }, 1000);
-  }
-
-  function stopCountdown() {
-    if (countdownInterval) {
-      clearInterval(countdownInterval);
-      countdownInterval = null;
-    }
-  }
-
-  function updateCountdownDisplay() {
+  function updateCountdown(seconds) {
     const el = document.getElementById('yt-as-countdown');
-    if (el) el.textContent = countdownSeconds + 's';
+    if (el) el.textContent = seconds == null ? '…' : Math.ceil(seconds) + 's';
   }
 
-  // -- Sound Detector (Clap/Snap) --
+  // ---------- voice control ----------
 
-  async function startSoundDetector() {
-    if (soundDetectorRunning) return;
+  function syncVoice() {
+    const wanted = settings.voiceEnabled && isShortsPage();
+    if (wanted && !voiceActive) startVoice();
+    else if (!wanted && voiceActive) stopVoice();
+  }
+
+  function startVoice() {
+    if (voiceActive) return;
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) return;
+
+    recognition = new SR();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+    recognition.maxAlternatives = 3;
+
+    recognition.onstart = () => {
+      voiceRestartDelay = 300;
+      showVoiceBadge('Listening', false);
+    };
+
+    recognition.onresult = (event) => {
+      const now = Date.now();
+      if (now - lastCommandTime < COMMAND_COOLDOWN) return;
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        for (let a = 0; a < result.length; a++) {
+          const words = result[a].transcript.trim().toLowerCase().split(/\s+/);
+          if (words.some((w) => SKIP_WORDS.includes(w))) {
+            lastCommandTime = now;
+            flashFeedback('Skip!');
+            advance('voice');
+            return;
+          }
+        }
+      }
+    };
+
+    recognition.onerror = (e) => {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        voiceActive = false;
+        showVoiceBadge('Mic blocked', true);
+      }
+    };
+
+    recognition.onend = () => {
+      if (!voiceActive) return;
+      // Chrome stops continuous recognition periodically; restart with backoff.
+      voiceRestartDelay = Math.min(voiceRestartDelay * 2, 5000);
+      setTimeout(() => {
+        if (voiceActive) { try { recognition.start(); } catch (_) {} }
+      }, voiceRestartDelay);
+    };
 
     try {
-      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch (err) {
-      console.warn('[AutoScroller] Mic permission denied:', err);
-      showSoundBadge('Mic denied', true);
-      return;
-    }
-
-    audioContext = new AudioContext();
-    const source = audioContext.createMediaStreamSource(micStream);
-    analyser = audioContext.createAnalyser();
-    analyser.fftSize = 256;
-    analyser.smoothingTimeConstant = 0.3;
-    source.connect(analyser);
-
-    soundDetectorRunning = true;
-    showSoundBadge('Listening', false);
-
-    startDetectLoop();
+      recognition.start();
+      voiceActive = true;
+    } catch (_) {}
   }
 
-  function stopSoundDetector() {
-    soundDetectorRunning = false;
-
-    if (detectInterval) {
-      clearInterval(detectInterval);
-      detectInterval = null;
+  function stopVoice() {
+    voiceActive = false;
+    if (recognition) {
+      try { recognition.abort(); } catch (_) {}
+      recognition = null;
     }
-    if (micStream) {
-      micStream.getTracks().forEach((t) => t.stop());
-      micStream = null;
-    }
-    if (audioContext) {
-      audioContext.close();
-      audioContext = null;
-    }
-    analyser = null;
-
-    const badge = document.getElementById('yt-as-voice-badge');
-    if (badge) badge.remove();
+    document.getElementById('yt-as-voice-badge')?.remove();
   }
 
-  let detectInterval = null;
-
-  function startDetectLoop() {
-    if (detectInterval) return;
-    const dataArray = new Uint8Array(analyser.frequencyBinCount);
-
-    // Poll at ~10 times per second - plenty fast for claps, minimal CPU
-    detectInterval = setInterval(() => {
-      if (!soundDetectorRunning || !analyser) {
-        clearInterval(detectInterval);
-        detectInterval = null;
-        return;
-      }
-
-      analyser.getByteFrequencyData(dataArray);
-
-      let sum = 0;
-      for (let i = 0; i < dataArray.length; i++) {
-        const v = dataArray[i] / 255;
-        sum += v * v;
-      }
-      const rms = Math.sqrt(sum / dataArray.length);
-
-      const now = Date.now();
-      if (rms > VOLUME_THRESHOLD && (now - lastTriggerTime > TRIGGER_COOLDOWN)) {
-        lastTriggerTime = now;
-        flashFeedback('Skip!');
-        scrollToNext();
-      }
-    }, 100);
-  }
-
-  function showSoundBadge(text, isError) {
+  function showVoiceBadge(text, isError) {
     let badge = document.getElementById('yt-as-voice-badge');
     if (!badge) {
       badge = document.createElement('div');
       badge.id = 'yt-as-voice-badge';
       document.body.appendChild(badge);
     }
-    badge.innerHTML = '<span class="yt-as-mic-icon">&#127908;</span> ' + text;
+    badge.textContent = '';
+    const icon = document.createElement('span');
+    icon.className = 'yt-as-mic-icon';
+    icon.textContent = '\u{1F3A4}';
+    badge.append(icon, document.createTextNode(' ' + text));
     badge.className = isError ? 'yt-as-voice-error' : 'yt-as-voice-active';
   }
 

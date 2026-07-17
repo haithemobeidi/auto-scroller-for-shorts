@@ -58,8 +58,8 @@ this can't be eliminated — the fix makes the *matcher* stricter instead:
 - `maxAlternatives` 3 → 1; only the top guess is checked.
 
 Verified with a logic test (scratchpad `match_test.js`): 8/8 sample dialogue lines
-that used to false-fire now don't, 4/4 real commands still work. **Not yet tested
-live with a real mic + speaker.**
+that used to false-fire now don't, 4/4 real commands still work. **Confirmed working
+live by the user (real mic + speaker) on 2026-07-17.**
 
 Also fixed: **orphaned content script left a stuck overlay/mic on the page**
 (`content/content.js`). When the extension is reloaded or auto-updated while a

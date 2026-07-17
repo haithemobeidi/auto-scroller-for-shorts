@@ -27,7 +27,7 @@
   let voiceRestartDelay = 300;
   let lastCommandTime = 0;
   const COMMAND_COOLDOWN = 2000;
-  const SKIP_WORDS = ['next', 'skip', 'scroll', 'swipe', 'nex', 'neck', 'text', 'mix'];
+  const SKIP_WORDS = ['next', 'skip', 'scroll', 'swipe'];
 
   let overlay = null;
 
@@ -364,7 +364,7 @@
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = 'en-US';
-    recognition.maxAlternatives = 3;
+    recognition.maxAlternatives = 1;
 
     recognition.onstart = () => {
       voiceRestartDelay = 300;
@@ -376,15 +376,24 @@
       if (now - lastCommandTime < COMMAND_COOLDOWN) return;
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
-        for (let a = 0; a < result.length; a++) {
-          const words = result[a].transcript.trim().toLowerCase().split(/\s+/);
-          if (words.some((w) => SKIP_WORDS.includes(w))) {
-            lastCommandTime = now;
-            flashFeedback('Skip!');
-            advance('voice');
-            return;
-          }
-        }
+        // Only the top alternative — scanning lower-ranked guesses invites
+        // false matches from the video's own audio.
+        const words = result[0].transcript.trim().toLowerCase().split(/\s+/);
+
+        // A real command is a short, standalone utterance ("next", "skip").
+        // The video's dialogue arrives as longer sentences, so ignore anything
+        // longer than two words.
+        if (words.length > 2) continue;
+        if (!words.some((w) => SKIP_WORDS.includes(w))) continue;
+
+        // Interim (not-yet-final) guesses are noisy; only act on them when the
+        // whole utterance is a single command word. Final results are trusted.
+        if (!result.isFinal && words.length !== 1) continue;
+
+        lastCommandTime = now;
+        flashFeedback('Skip!');
+        advance('voice');
+        return;
       }
     };
 

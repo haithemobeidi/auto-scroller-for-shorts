@@ -46,6 +46,23 @@ user already has a Stripe account (used for another app) they're fine reusing �
 just double-check the Stripe statement descriptor doesn't show the other app's name
 on a supporter's card statement.
 
+## Pending change (not yet shipped) — voice false-positive fix (2026-07-17)
+
+After submitting v2.0.0, tightened voice control so the video's own audio stops
+tripping a skip (`content/content.js`). The mic physically hears the speakers, so
+this can't be eliminated — the fix makes the *matcher* stricter instead:
+- Trimmed `SKIP_WORDS` to `['next','skip','scroll','swipe']` (dropped the phonetic
+  noise `nex`/`neck`/`text`/`mix` that collides with normal speech).
+- Only acts on **short, standalone utterances** (≤2 words; interim guesses must be a
+  single word). Video dialogue arrives as full sentences and is now ignored.
+- `maxAlternatives` 3 → 1; only the top guess is checked.
+
+Verified with a logic test (scratchpad `match_test.js`): 8/8 sample dialogue lines
+that used to false-fire now don't, 4/4 real commands still work. **Not yet tested
+live with a real mic + speaker.** This is queued for the next store version — bump
+`manifest.json` to **2.0.1**, rebuild the ZIP, and upload once the v2.0.0 review
+resolves (don't upload over an in-review item).
+
 ## If you need to update the extension later
 
 1. Bump `version` in `manifest.json`.

@@ -44,4 +44,5 @@ with a new "last updated" date.
 
 ## Contact
 
-Questions about this policy: **[your contact email here]**
+Questions about this policy: open an issue at
+https://github.com/haithemobeidi/auto-scroller-for-shorts/issues

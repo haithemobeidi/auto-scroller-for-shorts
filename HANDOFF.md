@@ -46,7 +46,13 @@ user already has a Stripe account (used for another app) they're fine reusing �
 just double-check the Stripe statement descriptor doesn't show the other app's name
 on a supporter's card statement.
 
-## Pending change (not yet shipped) — voice false-positive fix (2026-07-17)
+> **Update 2026-07-18:** v2.0.0 was **approved** by the Chrome Web Store. The two
+> fixes below were rolled into **v2.0.1** — manifest bumped, zip built at
+> `dist/auto-scroller-for-shorts-2.0.1.zip`, committed and pushed. Remaining step:
+> upload that zip on the Developer Console's Package tab and resubmit (manual —
+> automation is blocked on the dev console).
+
+## Pending change (shipped in v2.0.1) — voice false-positive fix (2026-07-17)
 
 After submitting v2.0.0, tightened voice control so the video's own audio stops
 tripping a skip (`content/content.js`). The mic physically hears the speakers, so

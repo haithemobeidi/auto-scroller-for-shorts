@@ -48,9 +48,9 @@ on a supporter's card statement.
 
 > **Update 2026-07-18:** v2.0.0 was **approved** by the Chrome Web Store. The two
 > fixes below were rolled into **v2.0.1** — manifest bumped, zip built at
-> `dist/auto-scroller-for-shorts-2.0.1.zip`, committed and pushed. Remaining step:
-> upload that zip on the Developer Console's Package tab and resubmit (manual —
-> automation is blocked on the dev console).
+> `dist/auto-scroller-for-shorts-2.0.1.zip`, committed and pushed. The user uploaded
+> the zip on the Developer Console and resubmitted the same day — **v2.0.1 is now in
+> review.** Nothing else is pending.
 
 ## Pending change (shipped in v2.0.1) — voice false-positive fix (2026-07-17)
 

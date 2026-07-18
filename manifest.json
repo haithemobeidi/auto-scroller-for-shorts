@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Auto Scroller for YouTube Shorts",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Automatically scroll through YouTube Shorts with customizable timing, hotkeys, and voice control.",
   "minimum_chrome_version": "111",
   "permissions": ["storage", "activeTab", "scripting"],
